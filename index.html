@@ -114,18 +114,12 @@
     object-fit: cover;
     object-position: center center;
     display: block;
-  }
-
-  #fade-overlay {
-    position: absolute;
-    inset: 0;
-    background: #f8f7f5;
-    z-index: 5;
+    background: #f8f7f5;          /* 프레임 공백 시 검정 대신 배경색 */
     opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.4s ease;
+    transition: opacity 0.6s ease;
+    will-change: opacity;
   }
-  #fade-overlay.fading { opacity: 1; }
+  video.show { opacity: 1; }
 
   #autoplay-indicator {
     position: absolute;
@@ -177,14 +171,14 @@
   /* ── 핏 버튼 (오른쪽 세로 스택, TECH DETAIL 도식화 위) ───────── */
   #sidebar {
     position: absolute;
-    top: 17.5%;
-    right: 4.5%;
+    top: 15%;
+    right: 6.5%;
     z-index: 20;
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 0.75vh;
-    width: 22%;
+    width: 20.9%;
   }
 
   .side-divider {
@@ -201,7 +195,7 @@
     gap: 0.3vh;
     width: 100%;
     min-height: 5.6vh;
-    padding: 1vh 1.4vh;
+    padding: 1vh 1.1vh;
     background: #ffffff;
     border: 1.5px solid #cccccc;        /* 기본: 연한 회색 테두리 */
     border-radius: 10px;
@@ -230,8 +224,8 @@
   .fit-btn.active .btn-group { color: rgba(255,255,255,0.72); }
 
   .btn-label {
-    font-size: 1.7vh;
-    letter-spacing: 0.04em;
+    font-size: 1.35vh;
+    letter-spacing: 0.01em;
     color: #b5b5b5;                     /* 기본: 연한 회색 글씨 */
     text-transform: uppercase;
     white-space: nowrap;
@@ -256,8 +250,8 @@
 <!-- 메인 앱 -->
 <div id="app" style="display:none;">
   <div id="video-wrap">
-    <video id="main-video" autoplay muted playsinline webkit-playsinline preload="auto"></video>
-    <div id="fade-overlay"></div>
+    <video id="video-a" class="show" muted playsinline webkit-playsinline preload="auto"></video>
+    <video id="video-b" muted playsinline webkit-playsinline preload="auto"></video>
     <div id="autoplay-indicator">
       <div id="autoplay-dot"></div>
       <div id="autoplay-label">Auto</div>
@@ -287,8 +281,9 @@ let currentIndex    = 0;
 let isAutoplaying   = true;
 let inactivityTimer = null;
 
-const video       = document.getElementById('main-video');
-const fadeOverlay = document.getElementById('fade-overlay');
+/* 두 개의 영상 레이어를 번갈아 사용해 크로스페이드 전환 */
+const vids  = [document.getElementById('video-a'), document.getElementById('video-b')];
+let   front = 0;  // 현재 화면에 보이는 레이어 인덱스
 const dotsEl      = document.getElementById('progress-dots');
 const sidebar     = document.getElementById('sidebar');
 const autoInd     = document.getElementById('autoplay-indicator');
@@ -358,36 +353,47 @@ function buildUI() {
   });
 }
 
-function playWhenReady() {
-  video.oncanplay = () => {
-    video.oncanplay = null;
-    video.play().catch(() => {});
-  };
-  // 이미 로드 완료 상태면 바로 재생
-  if (video.readyState >= 3) {
-    video.play().catch(() => {});
+/* 현재 보이는 레이어가 끝나면(자동재생 시) 다음 핏으로 */
+function setEndedHandler() {
+  vids.forEach(v => { v.onended = null; });
+  if (isAutoplaying) {
+    vids[front].onended = () => {
+      if (isAutoplaying) switchTo((currentIndex + 1) % FITS.length);
+    };
   }
 }
 
-function switchTo(index, skipFade) {
-  if (index === currentIndex && video.src && !skipFade) return;
+let isSwitching = false;
+
+/* 다음 핏을 뒤쪽 레이어에 로드 → 재생이 시작되면 두 레이어를 크로스페이드 */
+function switchTo(index, immediate) {
+  if (index === currentIndex && vids[front].src && !immediate) return;
   currentIndex = index;
   updateUI();
 
-  if (skipFade) {
-    video.src = FITS[index].path;
-    video.load();
-    playWhenReady();
-    return;
-  }
+  const cur = vids[front];
+  const nxt = vids[1 - front];
 
-  fadeOverlay.classList.add('fading');
-  setTimeout(() => {
-    video.src = FITS[index].path;
-    video.load();
-    playWhenReady();
-    fadeOverlay.classList.remove('fading');
-  }, 380);
+  isSwitching = true;
+  nxt.onended = null;
+  nxt.classList.remove('show');
+  nxt.src = FITS[index].path;
+  nxt.load();
+
+  const reveal = () => {
+    nxt.removeEventListener('playing', reveal);
+    // 새 영상이 실제로 프레임을 그리기 시작한 뒤에만 전환 → 검정/흰 깜빡임 없음
+    nxt.classList.add('show');
+    cur.classList.remove('show');
+    front = 1 - front;
+    isSwitching = false;
+    setEndedHandler();
+    // 페이드가 끝난 뒤 이전 레이어 정지(메모리 절약)
+    setTimeout(() => { try { cur.pause(); } catch (e) {} }, 700);
+  };
+
+  nxt.addEventListener('playing', reveal);
+  nxt.play().catch(() => {});
 }
 
 function updateUI() {
@@ -399,14 +405,12 @@ function updateUI() {
 function startAutoplay() {
   isAutoplaying = true;
   updateUI();
-  video.onended = () => {
-    if (isAutoplaying) switchTo((currentIndex + 1) % FITS.length);
-  };
+  setEndedHandler();
 }
 
 function pauseAutoplay() {
-  video.onended = null;
   isAutoplaying = false;
+  setEndedHandler();
   updateUI();
 }
 
@@ -423,9 +427,13 @@ function onFitTapped(index) {
 
 function init() {
   buildUI();
-  video.src = FITS[0].path;
-  video.load();
-  playWhenReady();
+  // 첫 핏: 앞쪽 레이어에 바로 로드해서 재생
+  const first = vids[0];
+  first.classList.add('show');
+  first.src = FITS[0].path;
+  first.load();
+  first.play().catch(() => {});
+  currentIndex = 0;
   startAutoplay();
 }
 
