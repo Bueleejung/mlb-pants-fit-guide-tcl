@@ -258,7 +258,7 @@
 <!-- 메인 앱 -->
 <div id="app" style="display:none;">
   <div id="video-wrap">
-    <video id="main-video" muted playsinline webkit-playsinline preload="auto"></video>
+    <video id="main-video" autoplay muted playsinline webkit-playsinline preload="auto"></video>
     <div id="fade-overlay"></div>
     <div id="autoplay-indicator">
       <div id="autoplay-dot"></div>
@@ -361,6 +361,19 @@ function buildUI() {
   });
 }
 
+/* Fully Kiosk(WebView) 대비: 재생이 막히면 가능 시점에 재시도 */
+function playVideo() {
+  const p = video.play();
+  if (p && typeof p.catch === 'function') {
+    p.catch(() => {
+      video.addEventListener('canplay', function once() {
+        video.removeEventListener('canplay', once);
+        video.play();
+      }, { once: true });
+    });
+  }
+}
+
 /* 자동재생 시 현재 영상이 끝나면 다음 핏으로 */
 function setEndedHandler() {
   video.onended = isAutoplaying
@@ -390,7 +403,7 @@ function switchTo(index, immediate) {
       setEndedHandler();
     };
     video.addEventListener('playing', reveal);
-    video.play().catch(() => {});
+    playVideo();
   };
 
   if (immediate) { updateUI(); apply(); return; }
@@ -433,7 +446,7 @@ function init() {
   currentIndex = 0;
   video.src = FITS[0].path;
   video.load();
-  video.play().catch(() => {});
+  playVideo();
   updateUI();
   startAutoplay();
 }
