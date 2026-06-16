@@ -115,6 +115,13 @@
     object-position: center center;
     display: block;
     background: #f8f7f5;          /* 프레임 공백 시 검정 대신 배경색 */
+    /* ★ 안드로이드 WebView(Fully Kiosk) 검정화면 방지:
+       영상을 GPU 합성 레이어로 승격시켜 정상 렌더링 */
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+    will-change: transform;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
   }
 
   /* 전환용 크림 오버레이 (단일 영상 → 깜빡임 차단 + 렉 최소화) */
