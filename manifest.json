@@ -1,0 +1,10 @@
+{
+  "name": "Fit Guide",
+  "short_name": "Fit Guide",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8f7f5",
+  "theme_color": "#f8f7f5",
+  "icons": []
+}
