@@ -99,9 +99,9 @@
   #video-wrap {
     position: relative;
     height: 100dvh;
-    width: calc(100dvh * (1640 / 2360));
+    width: calc(100dvh * (1600 / 2400));   /* 실제 영상 해상도 1600×2400 비율 */
     max-width: 100vw;
-    max-height: calc(100vw * (2360 / 1640));
+    max-height: calc(100vw * (2400 / 1600));
     overflow: hidden;
     background: #f8f7f5;
   }
@@ -116,25 +116,16 @@
     display: block;
     background: #f8f7f5;          /* 프레임 공백 시 검정 대신 배경색 */
     /* ★ 안드로이드 WebView(Fully Kiosk) 검정화면 방지:
-       영상을 GPU 합성 레이어로 승격시켜 정상 렌더링 */
+       opacity 전환 + GPU 레이어 승격으로 영상 정상 렌더링 (이전에 동작하던 방식) */
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    will-change: opacity;
     transform: translateZ(0);
     -webkit-transform: translateZ(0);
-    will-change: transform;
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;
   }
-
-  /* 전환용 크림 오버레이 (단일 영상 → 깜빡임 차단 + 렉 최소화) */
-  #fade-overlay {
-    position: absolute;
-    inset: 0;
-    background: #f8f7f5;
-    z-index: 5;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.22s ease;
-  }
-  #fade-overlay.fading { opacity: 1; }
+  video.show { opacity: 1; }
 
   #autoplay-indicator {
     position: absolute;
@@ -266,7 +257,6 @@
 <div id="app" style="display:none;">
   <div id="video-wrap">
     <video id="main-video" autoplay muted playsinline webkit-playsinline preload="auto"></video>
-    <div id="fade-overlay"></div>
     <div id="autoplay-indicator">
       <div id="autoplay-dot"></div>
       <div id="autoplay-label">Auto</div>
@@ -298,7 +288,6 @@ let inactivityTimer = null;
 
 /* 단일 영상 + 크림 오버레이로 전환 (저사양 태블릿 렉 방지) */
 const video       = document.getElementById('main-video');
-const fadeOverlay = document.getElementById('fade-overlay');
 const dotsEl      = document.getElementById('progress-dots');
 const sidebar     = document.getElementById('sidebar');
 const autoInd     = document.getElementById('autoplay-indicator');
@@ -313,27 +302,29 @@ const loadingStatus  = document.getElementById('loading-status');
 const appEl          = document.getElementById('app');
 
 async function registerSW() {
-  if (!('serviceWorker' in navigator)) {
-    showApp();
-    return;
+  if ('serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.register('./sw.js');
+    } catch (err) {
+      console.warn('SW 등록 실패:', err);
+    }
   }
-
-  try {
-    // 기존 SW 해제 후 새로 등록 (캐시 문제 방지)
-    const regs = await navigator.serviceWorker.getRegistrations();
-    for (const r of regs) await r.unregister();
-
-    // 이전 캐시 모두 삭제
-    const keys = await caches.keys();
-    for (const k of keys) await caches.delete(k);
-
-    await navigator.serviceWorker.register('./sw.js');
-  } catch (err) {
-    console.warn('SW 등록 실패:', err);
-  }
-
-  // SW 등록과 관계없이 바로 앱 시작 (영상은 네트워크에서 직접 로드)
   showApp();
+  prefetchVideos();   // 백그라운드로 나머지 영상 미리 캐싱 → 이후 전환 즉시
+}
+
+/* 첫 영상이 자리잡은 뒤, 나머지 영상을 순차적으로 미리 받아 SW 캐시에 저장.
+   한 번 받아두면 핏 전환 시 흰 화면/버퍼링 없이 즉시 재생됨. */
+function prefetchVideos() {
+  let i = 0;
+  const next = () => {
+    if (i >= FITS.length) return;
+    const path = FITS[i++].path;
+    fetch(path, { mode: 'cors', credentials: 'omit' })
+      .catch(() => {})
+      .finally(() => setTimeout(next, 400));
+  };
+  setTimeout(next, 1500);
 }
 
 function showApp() {
@@ -390,33 +381,40 @@ function setEndedHandler() {
 
 let switchToken = 0;
 
-/* 크림 오버레이로 덮은 뒤 src 교체 → 새 영상이 실제 재생되면
-   오버레이를 걷어내며(0.22s) 동시에 버튼 색도 갱신해 둘을 동기화 */
+/* 단일 영상의 opacity로 전환:
+   현재 영상을 페이드아웃(크림 배경 노출) → src 교체 → 첫 프레임 준비되면
+   페이드인하며 버튼 색도 동시에 갱신.
+   opacity 애니메이션이 WebView에서 영상 정상 렌더링을 보장(검정화면 방지). */
 function switchTo(index, immediate) {
   if (index === currentIndex && video.src && !immediate) return;
   currentIndex = index;
 
   const token = ++switchToken;   // 빠른 연속 탭 시 이전 전환 무시
 
-  const apply = () => {
+  const loadAndShow = () => {
     if (token !== switchToken) return;
     video.src = FITS[index].path;
     video.load();
+    let done = false;
     const reveal = () => {
-      video.removeEventListener('playing', reveal);
-      if (token !== switchToken) return;
-      updateUI();                          // 버튼 색 = 영상 등장과 동시(0.22s)
-      fadeOverlay.classList.remove('fading');
+      if (done || token !== switchToken) return;
+      done = true;
+      video.removeEventListener('loadeddata', reveal);
+      video.removeEventListener('canplay', reveal);
+      updateUI();                 // 버튼 색 = 영상 등장과 동시(0.22s)
+      video.classList.add('show');
       setEndedHandler();
     };
-    video.addEventListener('playing', reveal);
+    video.addEventListener('loadeddata', reveal);
+    video.addEventListener('canplay', reveal);
+    setTimeout(reveal, 600);      // 이벤트 누락 대비 안전장치
     playVideo();
   };
 
-  if (immediate) { updateUI(); apply(); return; }
+  if (immediate) { loadAndShow(); return; }
 
-  fadeOverlay.classList.add('fading');     // 크림으로 덮기(0.22s)
-  setTimeout(apply, 180);                  // 거의 덮인 뒤 교체 → 깜빡임 없음
+  video.classList.remove('show'); // 현재 영상 페이드아웃(0.18s)
+  setTimeout(loadAndShow, 120);
 }
 
 function updateUI() {
@@ -451,10 +449,7 @@ function onFitTapped(index) {
 function init() {
   buildUI();
   currentIndex = 0;
-  video.src = FITS[0].path;
-  video.load();
-  playVideo();
-  updateUI();
+  switchTo(0, true);   // 첫 핏 로드 + 페이드인
   startAutoplay();
 }
 
