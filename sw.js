@@ -1,4 +1,4 @@
-const CACHE_NAME = 'fit-guide-v6';
+const CACHE_NAME = 'fit-guide-v7';
 const CORE = ['./', './index.html'];
 
 // 설치: 코어(HTML)만 미리 캐싱. 영상은 사용/프리페치 시 캐싱됨
@@ -22,24 +22,9 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = e.request.url;
 
-  // ── 영상(.mp4): 캐시 우선 → 없으면 받아서 캐시에 저장 ──
-  // (한 번 받으면 다음부터는 즉시 로드 → 전환 흰화면/버퍼링 제거)
+  // ── 영상(.mp4): 캐시 우선, 없으면 "끝까지 다 받은 뒤에만" 저장 ──
   if (url.endsWith('.mp4')) {
-    e.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
-        cache.match(e.request, { ignoreVary: true }).then((hit) => {
-          if (hit) return hit;
-          // range 요청이면 전체 파일을 새로 받아 캐시(200)하고, 그 본문을 반환
-          const full = new Request(url, { headers: {}, mode: 'cors', credentials: 'omit' });
-          return fetch(full).then((res) => {
-            if (res && res.status === 200) {
-              cache.put(url, res.clone()).catch(() => {});
-            }
-            return res;
-          }).catch(() => fetch(e.request)); // 실패 시 원래 요청대로
-        })
-      )
-    );
+    e.respondWith(handleVideo(e.request, url));
     return;
   }
 
@@ -54,3 +39,59 @@ self.addEventListener('fetch', (e) => {
       .catch(() => caches.match(e.request))
   );
 });
+
+// 영상 처리: 반쪽짜리(잘린) 캐시가 생기지 않도록,
+// 네트워크에서 전체를 끝까지 받은 뒤에만 캐시에 저장한다.
+async function handleVideo(request, url) {
+  const cache = await caches.open(CACHE_NAME);
+  let res = await cache.match(url, { ignoreVary: true });
+
+  if (!res) {
+    try {
+      const net = await fetch(new Request(url, { mode: 'cors', credentials: 'omit' }));
+      if (!net || net.status !== 200) return net;           // 비정상 응답은 캐시 안 함
+      const buf = await net.arrayBuffer();                  // ★ 전체를 끝까지 다운로드
+      res = new Response(buf, {
+        headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(buf.byteLength) }
+      });
+      await cache.put(url, res.clone()).catch(() => {});    // ★ 완전한 파일만 저장
+    } catch {
+      return fetch(request);                                // 네트워크 실패 시 원래 요청대로
+    }
+  }
+
+  // 키오스크 WebView 영상 재생기가 기대하는 Range(206) 응답으로 변환 → 검정화면 방지
+  return toRangeResponse(res, request);
+}
+
+async function toRangeResponse(res, request) {
+  const buf = await res.arrayBuffer();
+  const len = buf.byteLength;
+  const range = request.headers.get('range');
+
+  if (!range) {
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Length': String(len),
+        'Accept-Ranges': 'bytes'
+      }
+    });
+  }
+
+  const m = /bytes=(\d+)-(\d*)/.exec(range);
+  const start = m ? parseInt(m[1], 10) : 0;
+  const end   = (m && m[2]) ? parseInt(m[2], 10) : len - 1;
+  const chunk = buf.slice(start, end + 1);
+
+  return new Response(chunk, {
+    status: 206,
+    headers: {
+      'Content-Type': 'video/mp4',
+      'Content-Range': `bytes ${start}-${end}/${len}`,
+      'Content-Length': String(chunk.byteLength),
+      'Accept-Ranges': 'bytes'
+    }
+  });
+}
