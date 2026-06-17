@@ -19,6 +19,16 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// 자동 복구: 앱이 "이 영상 깨진 것 같다"고 알려오면 해당 캐시만 삭제 → 다음 요청 때 새로 받음
+self.addEventListener('message', (e) => {
+  const d = e.data;
+  if (d && d.type === 'PURGE' && d.url) {
+    caches.open(CACHE_NAME)
+      .then((c) => c.delete(d.url, { ignoreVary: true }))
+      .catch(() => {});
+  }
+});
+
 self.addEventListener('fetch', (e) => {
   const url = e.request.url;
 

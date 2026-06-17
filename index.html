@@ -446,6 +446,27 @@ function onFitTapped(index) {
   switchTo(index);
 }
 
+/* ── 자동 복구 ───────────────────────────────────────────────────
+   영상 로드/재생에 실패하면(깨진 캐시 등), 서비스 워커에 그 영상 캐시를
+   버리라고 알리고 다시 받아 재생한다. 사람이 손대지 않아도 스스로 회복.
+   계속 실패하면 멈추지 않도록 다음 핏으로 넘어간다. */
+let recoverTries = 0;
+video.addEventListener('error', () => {
+  const badUrl = video.currentSrc || video.src;
+  if (!badUrl) return;
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.controller.postMessage({ type: 'PURGE', url: badUrl });
+  }
+  if (recoverTries < 3) {
+    recoverTries++;
+    setTimeout(() => { video.load(); playVideo(); }, 1000);  // 캐시 삭제 반영 후 재시도
+  } else {
+    recoverTries = 0;
+    switchTo((currentIndex + 1) % FITS.length, true);        // 그래도 안 되면 다음 핏으로
+  }
+});
+video.addEventListener('loadeddata', () => { recoverTries = 0; });  // 정상 재생되면 리셋
+
 function init() {
   buildUI();
   currentIndex = 0;
